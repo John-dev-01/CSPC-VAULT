@@ -1,0 +1,22 @@
+{
+  "name": "equipment-borrowing",
+  "version": "1.0.0",
+  "description": "Department-scoped campus equipment borrowing system (Node.js + Express + SQLite)",
+  "main": "express-server.js",
+  "scripts": {
+    "start": "node express-server.js",
+    "dev": "node --watch express-server.js",
+    "reset:borrowers": "node scripts/reset-borrowers.js",
+    "promote:system-admin": "node scripts/promote-system-admin.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "11.10.0",
+    "dotenv": "^18.0.9",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "google-auth-library": "^9.15.1",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.2.1"
+  }
+}
