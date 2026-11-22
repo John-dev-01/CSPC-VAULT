@@ -37,11 +37,11 @@ router.get('/equipment', guard, (req, res) => {
     if (!loansByEquipment.has(loan.equipment_id)) loansByEquipment.set(loan.equipment_id, []);
     loansByEquipment.get(loan.equipment_id).push(loan);
   }
-  const sidebarControls = `<section class="sidebar-controls" aria-labelledby="filter-heading"><div class="sidebar-controls-heading"><h2 id="filter-heading">Filters</h2><a href="/equipment">Clear</a></div>
+  const sidebarControls = `<section class="sidebar-controls" aria-labelledby="filter-heading"><div class="sidebar-controls-heading"><h2 id="filter-heading">Filters</h2></div>
     <form class="sidebar-filter-form" method="get" action="/equipment"><label>Search<input name="q" aria-label="Search equipment" placeholder="Name or category" value="${esc(q)}"></label>
     ${filterDropdown('category','Category',category,[{value:'',label:'All categories'},...categories.map(value=>({value,label:value}))])}
     ${filterDropdown('condition','Condition',condition,[{value:'',label:'All conditions'},...conditions.map(value=>({value,label:value}))])}
-    ${filterDropdown('availability','Availability',availability,[{value:'',label:'All availability'},{value:'available',label:'Available now'},{value:'unavailable',label:'Unavailable now'}])}<button>Apply filters</button></form></section>`;
+    ${filterDropdown('availability','Availability',availability,[{value:'',label:'All availability'},{value:'available',label:'Available now'},{value:'unavailable',label:'Unavailable now'}])}<button>Apply filters</button><a class="sidebar-filter-clear" href="/equipment">Clear</a></form></section>`;
   const body = `<div class="catalog-heading"><div><span class="catalog-kicker">CSPC / RESOURCE LIBRARY</span><h1>Equipment</h1></div><span class="catalog-count">${rows.length} ${rows.length===1?'item':'items'}</span></div>
     ${rows.length ? `<section class="equipment-grid" aria-label="Equipment items">${rows.map(item=>`<article class="equipment-card"><div class="equipment-card-image"><img src="${esc(equipmentImage(item))}" alt="${esc(item.name)}" loading="lazy"></div><div class="equipment-card-body"><div class="equipment-card-meta"><span>${esc(item.category)}</span><span>${esc(item.condition)}</span></div><h2>${esc(item.name)}</h2><div class="equipment-card-stock"><span>Available now</span><strong>${item.available>0?item.available:'None'}</strong></div>
       ${(loansByEquipment.get(item.id)||[]).length?`<details class="return-dates"><summary>Expected return dates</summary><ul>${loansByEquipment.get(item.id).map(loan=>`<li><time datetime="${esc(loan.due_date)}">${esc(loan.due_date)}</time>${loan.copies>1?` (${loan.copies} copies)`:''}</li>`).join('')}</ul></details>`:''}

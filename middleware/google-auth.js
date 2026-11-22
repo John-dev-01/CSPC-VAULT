@@ -7,7 +7,15 @@ const isConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.G
 function redirectUri(req) {
   const configured = String(process.env.GOOGLE_REDIRECT_URI || '').trim();
   if (configured) return configured;
-  const base = String(process.env.APP_BASE_URL || `${req.protocol}://${req.get('host')}`).trim();
+  const configuredBase = String(process.env.APP_BASE_URL || '').trim();
+  const requestHost = String(req.get('host') || '').toLowerCase();
+  const configuredIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(configuredBase.replace(/\/$/, ''));
+  const requestIsLocal = /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestHost);
+  const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const requestBase = `${forwardedProtocol || req.protocol}://${req.get('host')}`;
+  const base = configuredBase && !(configuredIsLocal && !requestIsLocal)
+    ? configuredBase
+    : requestBase;
   return new URL('/auth/google/callback', base).toString();
 }
 

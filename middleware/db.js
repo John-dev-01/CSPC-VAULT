@@ -101,6 +101,18 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 );
 CREATE INDEX IF NOT EXISTS password_reset_tokens_user_idx ON password_reset_tokens (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS password_reset_tokens_expiry_idx ON password_reset_tokens (expires_at);
+CREATE TABLE IF NOT EXISTS admin_password_reset_tokens (
+  id INTEGER PRIMARY KEY,
+  target_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  created_at INTEGER NOT NULL,
+  request_ip TEXT NOT NULL,
+  verification_email TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS admin_password_reset_tokens_target_idx ON admin_password_reset_tokens (target_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS admin_password_reset_tokens_expiry_idx ON admin_password_reset_tokens (expires_at);
 CREATE TABLE IF NOT EXISTS password_reset_requests (
   id INTEGER PRIMARY KEY,
   email TEXT NOT NULL COLLATE NOCASE,

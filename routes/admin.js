@@ -21,6 +21,23 @@ router.use('/admin/department-admins', requireSystemAdmin);
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 const flash = (req, type, msg) => (req.session.flash = { type, msg });
 const departments = () => require('../middleware/departments');
+const DEPARTMENT_ADMIN_DEFAULT_PASSWORDS = Object.freeze({
+  'cea.admin@my.cspc.edu.ph': 'cea123123',
+  'ccs.admin@my.cspc.edu.ph': 'ccs123123',
+  'chs.admin@my.cspc.edu.ph': 'chs123123',
+  'cas.admin@my.cspc.edu.ph': 'cas123123',
+  'thbm.admin@my.cspc.edu.ph': 'thbm123123',
+  'ctde.admin@my.cspc.edu.ph': 'ctde123123',
+  'buhi.admin@my.cspc.edu.ph': 'buhi123123',
+  'gs.admin@my.cspc.edu.ph': 'gs123123',
+});
+const defaultDepartmentAdminPassword = email => DEPARTMENT_ADMIN_DEFAULT_PASSWORDS[String(email || '').trim().toLowerCase()] || '';
+function invalidateUserSessions(userId) {
+  const remove = db.prepare('DELETE FROM app_sessions WHERE sid = ?');
+  for (const row of db.prepare('SELECT sid,data FROM app_sessions').all()) {
+    try { if (JSON.parse(row.data)?.user?.id === userId) remove.run(row.sid); } catch {}
+  }
+}
 const uploadDir = path.join(__dirname, '..', 'public', 'uploads', 'equipment');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({
@@ -64,7 +81,7 @@ const bulkImageUpload = (req, res, next) => upload.any()(req, res, err => {
 });
 
 router.get('/admin/department-admins', (req, res) => {
-  const rows = db.prepare("SELECT department,name,email FROM users WHERE role='admin' AND admin_scope='department' ORDER BY department COLLATE NOCASE").all();
+  const rows = db.prepare("SELECT id,department,email FROM users WHERE role='admin' AND admin_scope='department' ORDER BY department COLLATE NOCASE").all();
   const createDialog = `<dialog class="department-admin-dialog" data-department-admin-dialog aria-labelledby="department-admin-dialog-title">
     <form class="password-dialog-content" method="post" action="/admin/department-admins">
       <div class="password-dialog-heading"><div><span class="catalog-kicker">DEPARTMENT ACCESS</span><h2 id="department-admin-dialog-title">Create department account</h2></div><button class="password-dialog-close" type="button" data-close-department-admin-dialog aria-label="Close">×</button></div>
@@ -75,13 +92,13 @@ router.get('/admin/department-admins', (req, res) => {
       <label>Password<input type="password" name="password" minlength="12" maxlength="72" required autocomplete="new-password"></label>
       <label>Repeat password<input type="password" name="password_confirm" minlength="12" maxlength="72" required autocomplete="new-password"></label>
       <p class="field-note">Use 12+ characters with uppercase, lowercase, a number, and a symbol.</p>
-      <div class="password-dialog-actions"><button class="password-dialog-cancel" type="button" data-close-department-admin-dialog>Cancel</button><button type="submit">Create account</button></div>
+      <div class="password-dialog-actions"><button class="password-dialog-cancel" type="button" data-close-department-admin-dialog>Cancel</button><button class="department-admin-create-submit" type="submit">Create account</button></div>
     </form>
   </dialog>`;
   const body = `<div class="admin-stock-heading"><div><span class="catalog-kicker">DEPARTMENT ACCESS</span><h1>Department accounts</h1></div><span class="catalog-count">${rows.length} accounts</span></div>
     <p class="muted">Create department logins using any college name. Department admins can manage only their assigned college’s equipment, requests, and borrower chats.</p>
     <section class="card department-admin-create-card"><div><h2>Create department admin account</h2><p class="field-note">Open the form in a popup to create a new department account.</p></div><button type="button" data-open-department-admin-dialog>Create department account</button></section>
-    <h2>Account status</h2><table><thead><tr><th>College</th><th>Assigned admin account</th><th>Status</th></tr></thead><tbody>${rows.length ? rows.map(row => `<tr><td>${esc(row.department)}</td><td>${esc(row.name)} · ${esc(row.email)}</td><td>Account created</td></tr>`).join('') : '<tr><td colspan="3" class="muted">No department accounts have been created yet.</td></tr>'}</tbody></table>${createDialog}`;
+    <h2>Account status</h2><table><thead><tr><th>College</th><th>Admin email</th><th>Status</th><th>Security</th></tr></thead><tbody>${rows.length ? rows.map(row => `<tr><td>${esc(row.department)}</td><td>${esc(row.email)}</td><td>Account created</td><td><form class="department-password-reset-request" method="post" action="/admin/department-admins/${row.id}/reset-password"><button class="department-password-reset-button" type="submit">Reset password</button></form></td></tr>`).join('') : '<tr><td colspan="4" class="muted">No department accounts have been created yet.</td></tr>'}</tbody></table>${createDialog}`;
   res.send(req.app.locals.page(req, 'Department accounts', body));
 });
 
@@ -105,6 +122,33 @@ router.post('/admin/department-admins', (req, res) => {
       .run(name, email, bcrypt.hashSync(password, 12), 'admin', department, 'department');
     flash(req, 'ok', `Admin account created for ${department}.`);
   }
+  res.redirect('/admin/department-admins');
+});
+
+router.post('/admin/department-admins/:userId/reset-password', (req, res) => {
+  const targetId = Number(req.params.userId);
+  if (!Number.isSafeInteger(targetId) || targetId < 1) {
+    flash(req, 'error', 'Select a valid department admin account.');
+    return res.redirect('/admin/department-admins');
+  }
+  const target = db.prepare("SELECT id,name,email,department FROM users WHERE id=? AND role='admin' AND admin_scope='department'").get(targetId);
+  if (!target) {
+    flash(req, 'error', 'Department admin account not found.');
+    return res.redirect('/admin/department-admins');
+  }
+  const temporaryPassword = defaultDepartmentAdminPassword(target.email);
+  if (!temporaryPassword) {
+    flash(req, 'error', `No default temporary password is configured for ${target.email}.`);
+    return res.redirect('/admin/department-admins');
+  }
+  db.transaction(() => {
+    const update = db.prepare("UPDATE users SET password_hash=?,must_change_password=1 WHERE id=? AND role='admin' AND admin_scope='department'")
+      .run(bcrypt.hashSync(temporaryPassword, 12), target.id);
+    if (update.changes !== 1) throw new Error('Department admin account could not be reset.');
+    db.prepare('DELETE FROM admin_password_reset_tokens WHERE target_user_id=?').run(target.id);
+  })();
+  invalidateUserSessions(target.id);
+  flash(req, 'ok', `Password reset for ${target.name} (${target.email}). Temporary password: ${temporaryPassword}. They must change it at their next sign-in.`);
   res.redirect('/admin/department-admins');
 });
 
@@ -146,12 +190,12 @@ router.get('/admin/requests', (req, res) => {
   </dialog>`;
   const count = predicate => rows.filter(predicate).length;
   const requestFilters = `<section class="sidebar-controls" aria-labelledby="request-filter-heading">
-    <div class="sidebar-controls-heading"><h2 id="request-filter-heading">Filters</h2><a href="/admin/requests">Clear</a></div>
+    <div class="sidebar-controls-heading"><h2 id="request-filter-heading">Filters</h2></div>
     <form class="sidebar-filter-form" method="get" action="/admin/requests">
       <label>Search<input type="search" name="q" placeholder="Borrower, email, item, or purpose" value="${esc(search)}"></label>
       ${filterDropdown('status','Status',status,[{value:'',label:'All statuses'},...statuses.map(name=>({value:name,label:name.charAt(0).toUpperCase()+name.slice(1)}))])}
       ${isSystemAdmin(req.session.user) ? filterDropdown('department','Department',scope.selected,[{value:'',label:'All departments'},...departments().map(name=>({value:name,label:name}))]) : ''}
-      <button>Apply filters</button>
+      <button>Apply filters</button><a class="sidebar-filter-clear" href="/admin/requests">Clear</a>
     </form>
   </section>`;
   const emptyMessage = search || status || scope.selected ? 'No requests match these filters.' : 'No requests yet.';
@@ -218,10 +262,10 @@ function adminFilters(categories, query, deptList, isSystem) {
   const condition = typeof query.condition === 'string' ? query.condition : '';
   const availability = typeof query.availability === 'string' ? query.availability : '';
   const chosenDepartment = typeof query.department === 'string' && deptList.includes(query.department) ? query.department : '';
-  return `<section class="sidebar-controls" aria-labelledby="filter-heading"><div class="sidebar-controls-heading"><h2 id="filter-heading">Filters</h2><a href="/admin/equipment">Clear</a></div><form class="sidebar-filter-form" method="get" action="/admin/equipment">
-<label>Search<input name="q" aria-label="Search equipment" placeholder="Name or category" value="${esc(q)}"></label>${filterDropdown('category', 'Category', category, [{ value: '', label: 'All categories' }, ...categories.map(({ name }) => ({ value: name, label: name }))])}
+  return `<section class="sidebar-controls" aria-labelledby="filter-heading"><div class="sidebar-controls-heading"><h2 id="filter-heading">Filters</h2></div><form class="sidebar-filter-form" method="get" action="/admin/equipment">
+${isSystem ? `<label>Search<input name="q" aria-label="Search equipment" placeholder="Name or category" value="${esc(q)}"></label>` : ''}${filterDropdown('category', 'Category', category, [{ value: '', label: 'All categories' }, ...categories.map(({ name }) => ({ value: name, label: name }))])}
 ${isSystem ? filterDropdown('department', 'Department', chosenDepartment, [{ value: '', label: 'All departments' }, ...deptList.map(name => ({ value: name, label: name }))]) : ''}
-${filterDropdown('condition', 'Condition', condition, [{ value: '', label: 'All conditions' }, ...['Good', 'Fair', 'Needs repair'].map(value => ({ value, label: value }))])}${filterDropdown('availability', 'Availability', availability, [{ value: '', label: 'All availability' }, { value: 'available', label: 'Available' }, { value: 'unavailable', label: 'Unavailable' }])}<button>Apply filters</button></form></section>`;
+${filterDropdown('condition', 'Condition', condition, [{ value: '', label: 'All conditions' }, ...['Good', 'Fair', 'Needs repair'].map(value => ({ value, label: value }))])}${filterDropdown('availability', 'Availability', availability, [{ value: '', label: 'All availability' }, { value: 'available', label: 'Available' }, { value: 'unavailable', label: 'Unavailable' }])}<button>Apply filters</button><a class="sidebar-filter-clear" href="/admin/equipment">Clear</a></form></section>`;
 }
 function equipmentScope(req, requestedDepartment = '') {
   if (!isSystemAdmin(req.session.user)) return req.session.user.department;
@@ -251,8 +295,9 @@ router.get('/admin/equipment', (req, res) => {
     <label>Department<input value="${esc(e.department)}" disabled></label><label class="image-upload-field">Replace image<input type="file" name="item_${e.id}_image" accept="image/jpeg,image/png,image/gif,image/webp"><small>Leave empty to keep the current image.</small></label>
     <label>Image URL<input name="item_${e.id}_image_url" value="${esc(e.image_url)}"></label></div><button class="link admin-delete-button" type="submit" formmethod="post" formaction="/admin/equipment/${e.id}/delete">Archive item</button></div></article>`).join('');
   const deptLabel = dept || 'All departments';
+  const searchForm = !systemAdmin ? `<form class="admin-stock-search" method="get" action="/admin/equipment" role="search"><label class="sr-only" for="admin-equipment-search">Search equipment</label><input id="admin-equipment-search" data-equipment-search name="q" type="search" placeholder="Search equipment…" value="${esc(q)}"><kbd aria-hidden="true">/</kbd>${category ? `<input type="hidden" name="category" value="${esc(category)}">` : ''}${condition ? `<input type="hidden" name="condition" value="${esc(condition)}">` : ''}${availability ? `<input type="hidden" name="availability" value="${esc(availability)}">` : ''}</form>` : '';
   const body = `<div class="admin-stock-heading"><div><span class="catalog-kicker">${esc(deptLabel)}</span><h1>Manage stock</h1></div><span class="catalog-count">${rows.length} ${rows.length === 1 ? 'item' : 'items'}</span></div>
-    <div class="admin-items-toolbar"><h2>Items</h2><div class="admin-items-actions"><button type="button" data-open-add-item>Add Item</button>${rows.length ? '<button type="submit" form="bulk-equipment-form">Save changes</button>' : ''}</div></div>
+    <div class="admin-items-toolbar"><h2>Items</h2><div class="admin-items-actions">${searchForm}<button type="button" data-open-add-item>Add Item</button>${rows.length ? '<button type="submit" form="bulk-equipment-form">Save changes</button>' : ''}</div></div>
     ${rows.length ? `<form id="bulk-equipment-form" method="post" action="/admin/equipment/bulk" enctype="multipart/form-data"><input type="hidden" name="department" value="${esc(dept)}"><section class="admin-equipment-grid" aria-label="Edit equipment">${cards}</section></form>` : '<p class="muted">No equipment matches these filters.</p>'}
     <dialog class="admin-add-dialog" data-add-item-dialog aria-labelledby="add-item-dialog-title"><div class="admin-add-dialog-content"><div class="admin-add-dialog-heading"><div><span class="catalog-kicker">${esc(deptLabel)}</span><h2 id="add-item-dialog-title">Add Item</h2></div><button type="button" class="admin-add-dialog-close" data-close-add-item aria-label="Close add item dialog" title="Close">×</button></div>${equipForm({ department: dept || deptList[0] }, '/admin/equipment', 'Add Item', categories, deptList, 'admin-item-form', systemAdmin)}</div></dialog>`;
   res.send(req.app.locals.page(req, 'Manage stock', body, { sidebarControls: adminFilters(categories, req.query, deptList, systemAdmin) }));

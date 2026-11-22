@@ -7,8 +7,20 @@
       image.src = '/images/equipment-placeholder.png';
     }
   }, true);
-  let theme = root.dataset.theme === 'light' ? 'light' : 'dark';
+  document.addEventListener('keydown', event => {
+    if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select, [role="textbox"]'))) return;
+    const search = document.querySelector('[data-equipment-search]');
+    if (!search) return;
+    event.preventDefault();
+    search.focus();
+    search.select();
+  });
+  let themePreference = ['system', 'light', 'dark'].includes(root.dataset.themePreference) ? root.dataset.themePreference : 'system';
   const themeStorageKey = root.dataset.themeStorageKey || 'cspc-theme:guest';
+  const systemThemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+  let theme = root.dataset.theme === 'light' ? 'light' : 'dark';
   const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
   document.addEventListener('submit', event => {
     const form = event.target.closest('form[action="/logout"]');
@@ -232,6 +244,32 @@
   document.addEventListener('pointerleave', () => fixedCursor.classList.remove('is-visible'));
   window.addEventListener('blur', () => fixedCursor.classList.remove('is-visible'));
 
+  const placeThemeIndicators = (instant = false) => {
+    document.querySelectorAll('.theme-switcher').forEach(switcher => {
+      const activeButton = switcher.querySelector(`[data-theme-choice="${themePreference}"]`);
+      if (!activeButton) return;
+      let indicator = switcher.querySelector('.theme-switcher-indicator');
+      if (!indicator) {
+        indicator = document.createElement('span');
+        indicator.className = 'theme-switcher-indicator';
+        indicator.setAttribute('aria-hidden', 'true');
+        switcher.prepend(indicator);
+      }
+      const containerRect = switcher.getBoundingClientRect();
+      const buttonRect = activeButton.getBoundingClientRect();
+      if (!containerRect.width || !buttonRect.width) return;
+      const firstPlacement = indicator.dataset.positioned !== 'true';
+      if (instant || firstPlacement) indicator.style.transition = 'none';
+      indicator.style.width = `${buttonRect.width}px`;
+      indicator.style.height = `${buttonRect.height}px`;
+      indicator.style.transform = `translate3d(${buttonRect.left - containerRect.left - switcher.clientLeft}px, ${buttonRect.top - containerRect.top - switcher.clientTop}px, 0)`;
+      indicator.dataset.positioned = 'true';
+      if (instant || firstPlacement) {
+        indicator.getBoundingClientRect();
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => indicator.style.removeProperty('transition')));
+      }
+    });
+  };
   const updateButtons = () => {
     document.querySelectorAll('[data-theme-toggle]').forEach(button => {
       const nextTheme = theme === 'dark' ? 'light' : 'dark';
@@ -239,20 +277,124 @@
       button.setAttribute('aria-label', label);
       button.setAttribute('title', label);
     });
-  };
-
-  root.dataset.theme = theme;
-  updateButtons();
-
-  document.querySelectorAll('[data-theme-toggle]').forEach(button => {
-    button.addEventListener('click', () => {
-      theme = theme === 'dark' ? 'light' : 'dark';
-      root.dataset.theme = theme;
-      try { localStorage.setItem(themeStorageKey, theme); } catch (error) { /* Keep switching available without storage. */ }
-      updateButtons();
+    document.querySelectorAll('[data-theme-choice]').forEach(button => {
+      const selected = button.dataset.themeChoice === themePreference;
+      button.setAttribute('aria-pressed', String(selected));
+      button.classList.toggle('is-active', selected);
     });
-  });
+    placeThemeIndicators();
+  };
+  let themeTransitionTimer;
+  const applyThemePreference = (preference, persist = false, animate = false, sourceEvent = null) => {
+    const nextPreference = ['system', 'light', 'dark'].includes(preference) ? preference : 'system';
+    const nextTheme = nextPreference === 'system'
+      ? (systemThemeQuery.matches ? 'dark' : 'light')
+      : nextPreference;
+    const appearanceChanged = nextTheme !== theme;
+    const updateTheme = () => {
+      themePreference = nextPreference;
+      theme = nextTheme;
+      root.dataset.themePreference = themePreference;
+      root.dataset.theme = theme;
+      if (persist) {
+        try { localStorage.setItem(themeStorageKey, themePreference); } catch (error) { /* Theme remains active for this page. */ }
+      }
+      updateButtons();
+    };
+    if (!animate || !appearanceChanged) {
+      updateTheme();
+      return;
+    }
 
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!reducedMotion && sourceEvent && typeof document.startViewTransition === 'function') {
+      window.clearTimeout(themeTransitionTimer);
+      root.classList.remove('theme-anim');
+      const target = sourceEvent.currentTarget?.getBoundingClientRect();
+      const hasPointerOrigin = sourceEvent.detail !== 0 && Number.isFinite(sourceEvent.clientX) && Number.isFinite(sourceEvent.clientY);
+      const x = hasPointerOrigin ? sourceEvent.clientX : target ? target.left + target.width / 2 : window.innerWidth / 2;
+      const y = hasPointerOrigin ? sourceEvent.clientY : target ? target.top + target.height / 2 : window.innerHeight / 2;
+      const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+      try {
+        const transition = document.startViewTransition(updateTheme);
+        transition.ready.then(() => {
+          root.animate(
+            { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+            { duration: 540, easing: 'cubic-bezier(.32,.08,.24,1)', pseudoElement: '::view-transition-new(root)' }
+          );
+        }).catch(() => { /* Keep the selected theme if the visual transition is interrupted. */ });
+        return;
+      } catch (error) {
+        /* Fall back to the coordinated color transition if View Transitions are unavailable. */
+      }
+    }
+
+    root.classList.add('theme-anim');
+    updateTheme();
+    window.clearTimeout(themeTransitionTimer);
+    themeTransitionTimer = window.setTimeout(() => root.classList.remove('theme-anim'), 520);
+  };
+  applyThemePreference(themePreference);
+  window.addEventListener('resize', () => placeThemeIndicators(true), { passive: true });
+  if ('ResizeObserver' in window) {
+    const themeSwitcherResizeObserver = new ResizeObserver(() => placeThemeIndicators(true));
+    document.querySelectorAll('.theme-switcher').forEach(switcher => themeSwitcherResizeObserver.observe(switcher));
+  }
+  const themeSwitcherToggle = document.querySelector('[data-theme-switcher-toggle]');
+  const sidebarThemeSwitcher = document.querySelector('#sidebar-theme-selector');
+  const placeCollapsedThemeSwitcher = () => {
+    if (!themeSwitcherToggle || !sidebarThemeSwitcher || !themeSwitcherToggle.closest('.sidebar-bottom')?.classList.contains('is-theme-open')) return;
+    const anchor = themeSwitcherToggle.getBoundingClientRect();
+    const width = 160;
+    const height = sidebarThemeSwitcher.getBoundingClientRect().height || 48;
+    const left = Math.max(8, Math.min(anchor.right + 8, window.innerWidth - width - 8));
+    const top = Math.max(8, Math.min(anchor.top, window.innerHeight - height - 8));
+    sidebarThemeSwitcher.style.left = `${left}px`;
+    sidebarThemeSwitcher.style.top = `${top}px`;
+  };
+  const closeCollapsedThemeSwitcher = () => {
+    const bottom = themeSwitcherToggle?.closest('.sidebar-bottom');
+    bottom?.classList.remove('is-theme-open');
+    themeSwitcherToggle?.setAttribute('aria-expanded', 'false');
+  };
+  if (themeSwitcherToggle && sidebarThemeSwitcher) {
+    themeSwitcherToggle.addEventListener('click', () => {
+      const bottom = themeSwitcherToggle.closest('.sidebar-bottom');
+      const open = !bottom.classList.contains('is-theme-open');
+      bottom.classList.toggle('is-theme-open', open);
+      themeSwitcherToggle.setAttribute('aria-expanded', String(open));
+      if (open) {
+        window.requestAnimationFrame(() => {
+          placeCollapsedThemeSwitcher();
+          placeThemeIndicators(true);
+        });
+      }
+    });
+    document.addEventListener('click', event => {
+      if (!themeSwitcherToggle.contains(event.target) && !sidebarThemeSwitcher.contains(event.target)) closeCollapsedThemeSwitcher();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && themeSwitcherToggle.getAttribute('aria-expanded') === 'true') {
+        closeCollapsedThemeSwitcher();
+        themeSwitcherToggle.focus();
+      }
+    });
+    window.addEventListener('resize', placeCollapsedThemeSwitcher, { passive: true });
+  }
+  document.querySelectorAll('[data-theme-choice]').forEach(button => {
+    button.addEventListener('click', event => applyThemePreference(button.dataset.themeChoice, true, true, event));
+  });
+  document.querySelectorAll('[data-theme-toggle]').forEach(button => {
+    button.addEventListener('click', () => applyThemePreference(theme === 'dark' ? 'light' : 'dark', true, true));
+  });
+  const followSystemTheme = () => {
+    if (themePreference === 'system') applyThemePreference('system', false, true);
+  };
+  if (typeof systemThemeQuery.addEventListener === 'function') systemThemeQuery.addEventListener('change', followSystemTheme);
+  else if (typeof systemThemeQuery.addListener === 'function') systemThemeQuery.addListener(followSystemTheme);
+  window.addEventListener('storage', event => {
+    if (event.key === themeStorageKey) applyThemePreference(event.newValue || 'system', false, true);
+  });
   const sidebarButtons = document.querySelectorAll('[data-sidebar-toggle]');
   const updateSidebarButtons = () => {
     const hidden = root.dataset.sidebar === 'hidden';
@@ -264,22 +406,165 @@
     });
   };
   updateSidebarButtons();
+  const sidebarNav = document.querySelector('.sidebar-portal > .sidebar nav');
+  let sidebarIndicator;
+  const placeSidebarIndicator = (target, instant = false) => {
+    if (!sidebarNav || !target || !sidebarIndicator) return;
+    const navRect = sidebarNav.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    if (!targetRect.width || !targetRect.height) return;
+    if (instant) sidebarIndicator.style.transition = 'none';
+    sidebarIndicator.style.width = `${targetRect.width}px`;
+    sidebarIndicator.style.height = `${targetRect.height}px`;
+    sidebarIndicator.style.transform = `translate3d(${targetRect.left - navRect.left}px, ${targetRect.top - navRect.top + sidebarNav.scrollTop}px, 0)`;
+    if (instant) {
+      sidebarIndicator.getBoundingClientRect();
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        if (sidebarIndicator) sidebarIndicator.style.removeProperty('transition');
+      }));
+    }
+  };
+  if (sidebarNav) {
+    sidebarIndicator = document.createElement('span');
+    sidebarIndicator.className = 'sidebar-nav-active-indicator';
+    sidebarIndicator.setAttribute('aria-hidden', 'true');
+    sidebarNav.dataset.slidingIndicator = 'true';
+    sidebarNav.prepend(sidebarIndicator);
+    placeSidebarIndicator(sidebarNav.querySelector('a.active'), true);
+    window.addEventListener('resize', () => placeSidebarIndicator(sidebarNav.querySelector('a.active'), true), { passive: true });
+    if ('ResizeObserver' in window) {
+      const sidebarResizeObserver = new ResizeObserver(() => placeSidebarIndicator(sidebarNav.querySelector('a.active'), true));
+      sidebarResizeObserver.observe(sidebarNav);
+    }
+    sidebarNav.addEventListener('pointerover', event => {
+      const link = event.target.closest('a.active');
+      if (link) placeSidebarIndicator(link);
+    });
+  }
+  let sidebarNavigationPending = false;
+  document.querySelector('.sidebar nav')?.addEventListener('click', event => {
+    const link = event.target.closest('a[href]');
+    if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || link.target || link.hasAttribute('download')) return;
+    const destination = new URL(link.href, window.location.href);
+    if (destination.origin !== window.location.origin || destination.pathname === window.location.pathname && destination.search === window.location.search) return;
+    if (sidebarNavigationPending) { event.preventDefault(); return; }
+    const nav = link.closest('nav');
+    const links = [...(nav?.querySelectorAll('a[href]') || [])];
+    const targetIndex = links.indexOf(link);
+    const activeIndex = Math.max(0, links.findIndex(item => item.classList.contains('active')));
+    const direction = targetIndex >= activeIndex ? 'up' : 'down';
+    event.preventDefault();
+    sidebarNavigationPending = true;
+    links.forEach(item => {
+      const selected = item === link;
+      item.classList.toggle('active', selected);
+      if (selected) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    });
+    placeSidebarIndicator(link);
+    root.dataset.navLeaving = direction;
+    try { sessionStorage.setItem('cspc-sidebar-nav-transition', direction); } catch (error) { /* Continue with normal navigation if storage is unavailable. */ }
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.setTimeout(() => { window.location.assign(destination.href); }, reducedMotion ? 0 : 370);
+  });
   sidebarButtons.forEach(button => button.addEventListener('click', () => {
     if (root.dataset.sidebar === 'hidden') delete root.dataset.sidebar;
     else root.dataset.sidebar = 'hidden';
-    try { localStorage.setItem('cspc-sidebar', root.dataset.sidebar || 'visible'); } catch (error) { /* Sidebar remains toggleable without storage. */ }
+    try { localStorage.setItem('cspc-sidebar', root.dataset.sidebar || 'visible'); } catch (error) { /* Keep the panel toggle available without storage. */ }
     updateSidebarButtons();
+    window.requestAnimationFrame(() => placeSidebarIndicator(sidebarNav?.querySelector('a.active'), true));
   }));
+  // Resizable control panel: pointer drag plus keyboard arrows; the collapsed rail remains unchanged.
+  const sidebar = document.querySelector('.app.sidebar-portal > .sidebar');
+  if (sidebar && window.matchMedia('(min-width: 701px)').matches) {
+    const resizeHandle = document.createElement('div');
+    resizeHandle.className = 'sidebar-resize-handle';
+    resizeHandle.setAttribute('role', 'separator');
+    resizeHandle.setAttribute('aria-orientation', 'vertical');
+    resizeHandle.setAttribute('aria-label', 'Resize control panel');
+    resizeHandle.setAttribute('tabindex', '0');
+    resizeHandle.setAttribute('aria-controls', 'control-sidebar');
+    sidebar.id = sidebar.id || 'control-sidebar';
+    sidebar.appendChild(resizeHandle);
+    const minWidth = 180, maxWidth = Math.min(420, Math.floor(window.innerWidth * 0.42));
+    let savedWidth = 224;
+    try { savedWidth = Number(localStorage.getItem('cspc-sidebar-width')) || savedWidth; } catch (error) { /* Use default width. */ }
+    const applyWidth = width => {
+      const value = Math.max(minWidth, Math.min(maxWidth, width));
+      root.style.setProperty('--sidebar-width', `${value}px`);
+      resizeHandle.setAttribute('aria-valuemin', String(minWidth));
+      resizeHandle.setAttribute('aria-valuemax', String(maxWidth));
+      resizeHandle.setAttribute('aria-valuenow', String(value));
+      try { localStorage.setItem('cspc-sidebar-width', String(value)); } catch (error) { /* Resizing still works without storage. */ }
+    };
+    // Apply persisted sizing instantly on navigation; only user-triggered collapse animates.
+    root.classList.add('sidebar-width-initializing');
+    applyWidth(savedWidth);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      root.classList.remove('sidebar-width-initializing');
+    }));
+    let dragStartX = 0, dragStartWidth = 224;
+    resizeHandle.addEventListener('pointerdown', event => {
+      if (event.pointerType === 'touch') return;
+      dragStartX = event.clientX;
+      dragStartWidth = sidebar.getBoundingClientRect().width;
+      resizeHandle.setPointerCapture(event.pointerId);
+      document.documentElement.classList.add('sidebar-resizing');
+      event.preventDefault();
+    });
+    resizeHandle.addEventListener('pointermove', event => {
+      if (!resizeHandle.hasPointerCapture(event.pointerId)) return;
+      applyWidth(dragStartWidth + event.clientX - dragStartX);
+    });
+    const endResize = () => document.documentElement.classList.remove('sidebar-resizing');
+    resizeHandle.addEventListener('pointerup', endResize);
+    resizeHandle.addEventListener('pointercancel', endResize);
+    resizeHandle.addEventListener('keydown', event => {
+      const step = event.shiftKey ? 32 : 12;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        const current = sidebar.getBoundingClientRect().width;
+        applyWidth(current + (event.key === 'ArrowRight' ? step : -step));
+      } else if (event.key === 'Home') { event.preventDefault(); applyWidth(minWidth); }
+      else if (event.key === 'End') { event.preventDefault(); applyWidth(maxWidth); }
+    });
+  }
 
   const accountToggle = document.querySelector('[data-account-toggle]');
   const accountMenu = document.querySelector('[data-account-menu]');
   let accountMenuCloseTimer;
+  const positionAccountMenu = () => {
+    if (!accountToggle || !accountMenu || accountMenu.hidden) return;
+    const anchor = accountToggle.getBoundingClientRect();
+    const margin = 12;
+    const gap = 9;
+    const width = Math.max(0, Math.min(260, window.innerWidth - margin * 2));
+    accountMenu.style.width = `${width}px`;
+    accountMenu.style.maxHeight = `calc(100vh - ${margin * 2}px)`;
+    const panel = accountMenu.getBoundingClientRect();
+    const above = anchor.top - margin;
+    const below = window.innerHeight - margin - anchor.bottom;
+    const placeAbove = above >= panel.height + gap || above >= below;
+    accountMenu.classList.toggle('opens-upward', placeAbove);
+    const top = placeAbove
+      ? Math.max(margin, anchor.top - panel.height - gap)
+      : Math.min(window.innerHeight - margin - panel.height, anchor.bottom + gap);
+    const left = Math.max(margin, Math.min(anchor.left, window.innerWidth - width - margin));
+    accountMenu.style.top = `${top}px`;
+    accountMenu.style.left = `${left}px`;
+  };
+  if (accountToggle && accountMenu) {
+    accountMenu.classList.add('account-popover-portal');
+    document.body.appendChild(accountMenu);
+  }
   const closeAccountMenu = () => {
     if (!accountToggle || !accountMenu) return;
     if (accountMenuCloseTimer) window.clearTimeout(accountMenuCloseTimer);
     if (accountMenu.hidden) return;
     accountMenu.classList.remove('is-open');
     accountToggle.setAttribute('aria-expanded', 'false');
+    accountToggle.setAttribute('aria-label', 'Open account menu');
+    accountToggle.setAttribute('title', 'Open account menu');
     accountMenuCloseTimer = window.setTimeout(() => {
       if (!accountMenu.classList.contains('is-open')) accountMenu.hidden = true;
       accountMenuCloseTimer = undefined;
@@ -291,7 +576,10 @@
     accountMenuCloseTimer = undefined;
     accountMenu.hidden = false;
     accountMenu.classList.remove('is-open');
+    positionAccountMenu();
     accountToggle.setAttribute('aria-expanded', 'true');
+    accountToggle.setAttribute('aria-label', 'Close account menu');
+    accountToggle.setAttribute('title', 'Close account menu');
     void accountMenu.offsetWidth;
     window.requestAnimationFrame(() => {
       if (!accountMenu.hidden && accountToggle.getAttribute('aria-expanded') === 'true') accountMenu.classList.add('is-open');
@@ -303,10 +591,15 @@
       else openAccountMenu();
     });
     document.addEventListener('click', event => {
-      if (!event.target.closest('.account-menu')) closeAccountMenu();
+      if (!accountToggle.contains(event.target) && !accountMenu.contains(event.target)) closeAccountMenu();
     });
+    accountMenu.addEventListener('click', event => {
+      if (event.target.closest('[data-open-password-dialog], form[action="/logout"] button')) closeAccountMenu();
+    });
+    window.addEventListener('resize', positionAccountMenu, { passive: true });
+    window.addEventListener('scroll', positionAccountMenu, { passive: true, capture: true });
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' && accountMenu.classList.contains('is-open')) {
         closeAccountMenu();
         accountToggle.focus();
       }
@@ -469,9 +762,13 @@
     const baseCanvas = document.createElement('canvas');
     const baseContext = baseCanvas.getContext('2d', { alpha: false });
     if (!baseContext) return;
-    const cellSize = 80;
-    const maxActiveParticles = 1600;
-    const interactionRadiusRatio = .21;
+    // Cover the complete visible CSPC artwork while keeping the spatial lookup
+    // bounded so broad pointer movement stays responsive instead of lagging.
+    const cellSize = 56;
+    // Never truncate candidates by lookup order; that creates visible columns.
+    // Every dot inside the distance field is allowed to react individually.
+    const maxActiveParticles = particles.length;
+    const interactionRadiusRatio = .18;
     const activeParticles = new Set();
     let spatialCells = new Map();
     let width = 0, height = 0, dpr = 1, artWidth = 0, artHeight = 0, artLeft = 0, artTop = 0, scale = 1, frame = 0, pointerIdleTimer, pointerFrame = 0;
@@ -486,7 +783,6 @@
       context.drawImage(baseCanvas, 0, 0, width, height);
       if (!activeParticles.size) return;
       const radius = Math.max(84, Math.min(artWidth, artHeight) * interactionRadiusRatio);
-      const movingLayers = Array.from({ length: 10 }, () => []);
       const moved = [];
       for (const particle of activeParticles) {
         if (pointer.active && !reducedMotion) {
@@ -494,7 +790,7 @@
           const dy = particle.y - pointer.y;
           const distance = Math.hypot(dx, dy);
           if (distance < radius && distance > .01) {
-            const push = (1 - distance / radius) ** 2 * 4.5;
+            const push = (1 - distance / radius) ** 2 * 3.2;
             particle.vx += (dx / distance) * push;
             particle.vy += (dy / distance) * push;
           }
@@ -507,7 +803,6 @@
         particle.y += particle.vy;
         if (Math.abs(particle.x - particle.baseX) > .12 || Math.abs(particle.y - particle.baseY) > .12 || Math.abs(particle.vx) > .015 || Math.abs(particle.vy) > .015) {
           moved.push(particle);
-          movingLayers[particle.bucket - 1].push(particle);
         } else {
           particle.x = particle.baseX;
           particle.y = particle.baseY;
@@ -526,17 +821,14 @@
         context.arc(particle.baseX, particle.baseY, clearSize, 0, Math.PI * 2);
       }
       context.fill();
-      movingLayers.forEach((layer, index) => {
-        if (!layer.length) return;
-        context.beginPath();
-        for (const particle of layer) {
-          context.moveTo(particle.x + particle.radius, particle.y);
-          context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
-        }
-        context.fillStyle = '#101010';
-        context.globalAlpha = .96 * ((index + 1) / 10);
-        context.fill();
-      });
+      context.beginPath();
+      for (const particle of moved) {
+        context.moveTo(particle.x + particle.radius, particle.y);
+        context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+      }
+      context.fillStyle = '#101010';
+      context.globalAlpha = .9;
+      context.fill();
       context.globalAlpha = 1;
       if (activeParticles.size) scheduleDraw();
     };
@@ -594,6 +886,8 @@
     };
     const addNearbyParticles = () => {
       const radius = Math.max(84, Math.min(artWidth, artHeight) * interactionRadiusRatio);
+      const radiusSquared = radius * radius;
+      const candidates = [];
       const minX = Math.floor((pointer.x - radius) / cellSize);
       const maxX = Math.floor((pointer.x + radius) / cellSize);
       const minY = Math.floor((pointer.y - radius) / cellSize);
@@ -605,17 +899,29 @@
           for (const particle of cell) {
             const dx = particle.baseX - pointer.x;
             const dy = particle.baseY - pointer.y;
-            if (dx * dx + dy * dy < (radius + cellSize * .2) ** 2 && activeParticles.size < maxActiveParticles) activeParticles.add(particle);
+            if (dx * dx + dy * dy < radiusSquared) candidates.push(particle);
           }
         }
       }
+      const limit = Math.min(maxActiveParticles, candidates.length);
+      if (limit) {
+        // Sample across the whole candidate list instead of taking the first
+        // cells, which avoids columns without the cost of sorting every frame.
+        const offset = candidates.length > 1
+          ? (Math.abs(Math.floor(pointer.x * 3 + pointer.y * 5)) % candidates.length)
+          : 0;
+        for (let index = 0; index < limit; index++) {
+          const sample = Math.floor((index * candidates.length) / limit + offset) % candidates.length;
+          activeParticles.add(candidates[sample]);
+        }
+      }
       // Keep fast pointer sweeps from growing the animated set without bound.
-      const trimRadius = radius * 1.35;
+      const trimRadius = radius * 1.08;
       const trimRadiusSquared = trimRadius * trimRadius;
       activeParticles.forEach(particle => {
         const dx = particle.baseX - pointer.x;
         const dy = particle.baseY - pointer.y;
-        if (dx * dx + dy * dy > trimRadiusSquared && Math.abs(particle.vx) < .35 && Math.abs(particle.vy) < .35) {
+        if (dx * dx + dy * dy > trimRadiusSquared) {
           activeParticles.delete(particle);
         }
       });
@@ -626,8 +932,8 @@
         pointer.x = pendingPointerX;
         pointer.y = pendingPointerY;
       } else {
-        pointer.x += (pendingPointerX - pointer.x) * .24;
-        pointer.y += (pendingPointerY - pointer.y) * .24;
+        pointer.x += (pendingPointerX - pointer.x) * .18;
+        pointer.y += (pendingPointerY - pointer.y) * .18;
       }
       addNearbyParticles();
       scheduleDraw();

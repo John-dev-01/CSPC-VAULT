@@ -56,4 +56,26 @@ async function sendPasswordResetLink(email, link) {
   }
 }
 
-module.exports = { sendVerificationLink, sendPasswordResetLink };
+async function sendAdminPasswordResetLink(email, link, targetEmail) {
+  const mail = getTransporter();
+  if (!mail) {
+    console.info(`[ADMIN PASSWORD RESET DEMO] Verification recipient: ${email} | Target account: ${targetEmail} | Confirm using this link within 20 minutes: ${link}`);
+    return { sent: false, fallback: true };
+  }
+  try {
+    await mail.transporter.sendMail({
+      from: `CSPC Equipment Desk <${mail.user}>`,
+      to: email,
+      subject: 'Authorize a department-admin password reset',
+      text: `A system administrator requested a password reset for ${targetEmail}. Open this one-time link within 20 minutes to authorize the reset and choose a new password. If you did not request this, ignore this email.\n\n${link}`,
+      html: `<p>A system administrator requested a password reset for <strong>${targetEmail}</strong>.</p><p><a href="${link}" style="display:inline-block;padding:12px 20px;background:#146c5b;color:#fff;text-decoration:none;border-radius:999px">Authorize password reset</a></p><p>This link expires in 20 minutes and can be used only once. If you did not request this, ignore this email.</p><p>If the button does not work, copy and paste this address into your browser:</p><p><a href="${link}">${link}</a></p>`,
+    });
+    return { sent: true, fallback: false };
+  } catch (error) {
+    console.error(`Could not send admin password reset email to ${email}: ${error.message}`);
+    console.info(`[ADMIN PASSWORD RESET DEMO] Verification recipient: ${email} | Target account: ${targetEmail} | Confirm using this link within 20 minutes: ${link}`);
+    return { sent: false, fallback: true };
+  }
+}
+
+module.exports = { sendVerificationLink, sendPasswordResetLink, sendAdminPasswordResetLink };
