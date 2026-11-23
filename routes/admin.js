@@ -189,17 +189,18 @@ router.get('/admin/requests', (req, res) => {
     </form>
   </dialog>`;
   const count = predicate => rows.filter(predicate).length;
+  const requestSearchForm = `<form class="admin-stock-search request-queue-search" method="get" action="/admin/requests" role="search"><label class="sr-only" for="admin-request-search">Search requests</label><input id="admin-request-search" data-equipment-search name="q" type="search" placeholder="Search requests…" value="${esc(search)}"><kbd aria-hidden="true">/</kbd>${status ? `<input type="hidden" name="status" value="${esc(status)}">` : ''}${scope.selected ? `<input type="hidden" name="department" value="${esc(scope.selected)}">` : ''}</form>`;
   const requestFilters = `<section class="sidebar-controls" aria-labelledby="request-filter-heading">
     <div class="sidebar-controls-heading"><h2 id="request-filter-heading">Filters</h2></div>
     <form class="sidebar-filter-form" method="get" action="/admin/requests">
-      <label>Search<input type="search" name="q" placeholder="Borrower, email, item, or purpose" value="${esc(search)}"></label>
+      ${search ? `<input type="hidden" name="q" value="${esc(search)}">` : ''}
       ${filterDropdown('status','Status',status,[{value:'',label:'All statuses'},...statuses.map(name=>({value:name,label:name.charAt(0).toUpperCase()+name.slice(1)}))])}
       ${isSystemAdmin(req.session.user) ? filterDropdown('department','Department',scope.selected,[{value:'',label:'All departments'},...departments().map(name=>({value:name,label:name}))]) : ''}
       <button>Apply filters</button><a class="sidebar-filter-clear" href="/admin/requests">Clear</a>
     </form>
   </section>`;
   const emptyMessage = search || status || scope.selected ? 'No requests match these filters.' : 'No requests yet.';
-  const body = `<div class="admin-stock-heading"><div><span class="catalog-kicker">${scope.selected ? esc(scope.selected) : 'ALL DEPARTMENTS'}</span><h1>Request queue</h1></div><span class="catalog-count">${rows.length} requests</span></div>
+  const body = `<div class="admin-stock-heading"><div><span class="catalog-kicker">${scope.selected ? esc(scope.selected) : 'ALL DEPARTMENTS'}</span><h1>Request queue</h1></div><div class="request-queue-heading-meta"><span class="catalog-count">${rows.length} requests</span>${requestSearchForm}</div></div>
     ${stats([['Matching requests',rows.length,true],['Pending',count(r=>r.status==='pending')],['On loan',count(r=>r.status==='approved')],['Overdue',count(r=>r.status==='approved'&&r.due_date<today())]])}
     ${rows.length ? `<div class="request-table-wrap"><table class="request-table"><thead><tr><th>Borrower</th><th>Department</th><th>Item</th><th>Qty</th><th>Dates</th><th>Purpose</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.borrower)}</td><td>${esc(r.department)}</td><td>${esc(r.item)}${r.condition==='Needs repair'?' · Needs repair':''}</td><td>${r.quantity}</td><td>${esc(r.borrow_date)} → ${esc(r.due_date)}</td><td>${esc(r.purpose)}</td><td>${badge(r.status)}${r.status==='approved'&&r.due_date<today()?' <span class="badge rejected">overdue</span>':''}${r.status==='rejected'&&r.rejection_reason?`<small class="rejection-reason">${esc(r.rejection_reason)}</small>`:''}</td><td class="acts">${r.status==='pending'?act(r.id,'approve','Approve')+reject(r.id):''}${r.status==='approved'?act(r.id,'return','Mark returned'):''}</td></tr>`).join('')}</tbody></table></div>`:`<p class="muted">${emptyMessage}</p>`}`;
   const dialog = rows.some(r => r.status === 'pending') ? rejectionDialog : '';
@@ -246,13 +247,22 @@ router.post('/admin/requests/:id/reject', (req,res) => {
 });
 router.post('/admin/requests/:id/return',(req,res)=>{const error=giveBack(req.params.id,req.session.user);flash(req,error?'error':'ok',error||'Item marked returned. Availability recalculated.');res.redirect('/admin/requests');});
 
-const categoryOptions = (categories, selected) => categories.map(c => `<option value="${esc(c.name)}"${selected === c.name ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
-const conditionOptions = selected => ['Good', 'Fair', 'Needs repair'].map(c => `<option${selected === c ? ' selected' : ''}>${c}</option>`).join('');
-const departmentOptions = (list, selected) => list.map(name => `<option value="${esc(name)}"${selected === name ? ' selected' : ''}>${esc(name)}</option>`).join('');
+const equipmentDropdown = (name, label, selected, choices, id, required = false) => {
+  const current = choices.find(choice => choice.value === selected) || choices[0] || { value: '', label: `Select ${label.toLowerCase()}` };
+  const value = current.value;
+  return `<div class="department-select equipment-custom-select${value ? ' has-value' : ''}" data-department-select${required ? ' data-required-selection' : ''}>
+    <input type="hidden" name="${esc(name)}" value="${esc(value)}" data-department-value>
+    <button class="department-select-trigger" type="button" data-department-trigger role="combobox" aria-label="${esc(label)}" aria-haspopup="listbox" aria-expanded="false" aria-controls="${esc(id)}"${required ? ' aria-required="true"' : ''}><span data-department-label>${esc(current.label)}</span><span class="department-select-chevron" aria-hidden="true"></span></button>
+    <div class="department-select-menu" id="${esc(id)}" data-department-options role="listbox" aria-label="${esc(label)} options" hidden>${choices.map(choice => `<button type="button" class="department-option" data-department-option data-value="${esc(choice.value)}" role="option" aria-selected="${choice.value === value}">${esc(choice.label)}</button>`).join('')}</div>
+    ${required ? `<span class="department-error" data-department-error hidden>Please choose ${esc(label.toLowerCase())}.</span>` : ''}
+  </div>`;
+};
+const equipmentCategories = categories => categories.map(category => ({ value: category.name, label: category.name }));
+const equipmentConditions = ['Good', 'Fair', 'Needs repair'].map(value => ({ value, label: value }));
 const equipForm = (e = {}, action = '/admin/equipment', label = 'Add item', categories = [], departmentList = [], className = 'inline', canChooseDepartment = false) => `<form method="post" action="${action}" enctype="multipart/form-data" class="${className}">
-<input name="name" placeholder="Name" required value="${esc(e.name)}"><select name="category" required aria-label="Category">${categoryOptions(categories, e.category)}</select>
-${canChooseDepartment ? `<select name="department" required aria-label="Department">${departmentOptions(departmentList, e.department)}</select>` : ''}
-<input type="number" name="quantity" min="0" required value="${esc(e.quantity ?? 1)}" style="width:5rem"><select name="condition">${conditionOptions(e.condition)}</select>
+<input name="name" placeholder="Name" required value="${esc(e.name)}">${equipmentDropdown('category', 'Category', e.category, equipmentCategories(categories), 'add-item-category-options', true)}
+${canChooseDepartment ? equipmentDropdown('department', 'Department', e.department, departmentList.map(value => ({ value, label: value })), 'add-item-department-options', true) : ''}
+<input type="number" name="quantity" min="0" required value="${esc(e.quantity ?? 1)}" style="width:5rem">${equipmentDropdown('condition', 'Condition', e.condition, equipmentConditions, 'add-item-condition-options')}
 <label class="image-upload-field">Image<input type="file" name="image" accept="image/jpeg,image/png,image/gif,image/webp"><small>Upload JPG, PNG, GIF, or WebP images up to 5 MB${e.image_url ? ' or keep the current image below.' : '.'}</small></label>
 <input name="image_url" placeholder="Image URL (optional)" aria-label="Image URL" value="${esc(e.image_url)}"><button>${label}</button></form>`;
 
@@ -276,6 +286,7 @@ router.get('/admin/equipment', (req, res) => {
   const systemAdmin = isSystemAdmin(req.session.user);
   const dept = equipmentScope(req, typeof req.query.department === 'string' ? req.query.department : '');
   const categories = db.prepare('SELECT name FROM categories ORDER BY name COLLATE NOCASE').all();
+  const categoryChoices = equipmentCategories(categories);
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const category = categories.some(c => c.name === req.query.category) ? req.query.category : '';
   const condition = ['Good', 'Fair', 'Needs repair'].includes(req.query.condition) ? req.query.condition : '';
@@ -289,9 +300,9 @@ router.get('/admin/equipment', (req, res) => {
   const rows = db.prepare(`SELECT * FROM equipment${filters.length ? ` WHERE ${filters.join(' AND ')}` : ''} ORDER BY name`).all(...params)
     .map(item => ({...item, available_now:item.condition==='Needs repair'?0:availableCopies(item,today(),today())}))
     .filter(item => availability==='available'?item.available_now>0:availability==='unavailable'?item.available_now===0:true);
-  const cards = rows.map(e => `<article class="admin-equipment-card"><div class="equipment-card-image"><img src="${esc(equipmentImage(e))}" alt="${esc(e.name)}" loading="lazy"></div><div class="admin-equipment-editor"><div class="admin-item-fields">
-    <label>Name<input name="item_${e.id}_name" required value="${esc(e.name)}"></label><label>Category<select name="item_${e.id}_category" required>${categoryOptions(categories, e.category)}</select></label>
-    <label>Total copies<input type="number" name="item_${e.id}_quantity" min="0" required value="${esc(e.quantity)}"><small>${e.available_now} available today</small></label><label>Condition<select name="item_${e.id}_condition">${conditionOptions(e.condition)}</select></label>
+  const cards = rows.map(e => `<article class="admin-equipment-card"><div class="equipment-card-image is-image-loading" data-image-skeleton><img src="${esc(equipmentImage(e))}" alt="${esc(e.name)}" loading="lazy" data-skeleton-image></div><div class="admin-equipment-editor"><div class="admin-item-fields">
+    <label>Name<input name="item_${e.id}_name" required value="${esc(e.name)}"></label><label>Category${equipmentDropdown(`item_${e.id}_category`, 'Category', e.category, categoryChoices, `item-${e.id}-category-options`, true)}</label>
+    <label>Total copies<input type="number" name="item_${e.id}_quantity" min="0" required value="${esc(e.quantity)}"><small>${e.available_now} available today</small></label><label>Condition${equipmentDropdown(`item_${e.id}_condition`, 'Condition', e.condition, equipmentConditions, `item-${e.id}-condition-options`)}</label>
     <label>Department<input value="${esc(e.department)}" disabled></label><label class="image-upload-field">Replace image<input type="file" name="item_${e.id}_image" accept="image/jpeg,image/png,image/gif,image/webp"><small>Leave empty to keep the current image.</small></label>
     <label>Image URL<input name="item_${e.id}_image_url" value="${esc(e.image_url)}"></label></div><button class="link admin-delete-button" type="submit" formmethod="post" formaction="/admin/equipment/${e.id}/delete">Archive item</button></div></article>`).join('');
   const deptLabel = dept || 'All departments';

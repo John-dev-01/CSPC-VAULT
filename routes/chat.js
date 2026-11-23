@@ -113,7 +113,7 @@ function chatPage(role, user) {
       <div class="chat-filter-panel-heading"><strong>Departments</strong><button type="button" class="chat-filter-clear" data-chat-filter-clear>Clear</button></div>
       <div class="chat-filter-options">${departments.map(name => `<label><input type="checkbox" data-department-filter value="${esc(name)}"><span>${esc(name)}</span></label>`).join('')}</div>
     </section>` : ''}
-    <div class="chat-conversation-list" data-chat-conversations><p class="chat-empty">Loading conversations…</p></div>
+    <div class="chat-conversation-list" data-chat-conversations aria-busy="true"><div class="chat-conversation-skeleton" data-chat-skeleton aria-hidden="true"><span class="chat-skeleton-line name"></span><span class="chat-skeleton-line email"></span><span class="chat-skeleton-line detail"></span><span class="chat-skeleton-line preview"></span></div><div class="chat-conversation-skeleton" data-chat-skeleton aria-hidden="true"><span class="chat-skeleton-line name"></span><span class="chat-skeleton-line email"></span><span class="chat-skeleton-line detail"></span><span class="chat-skeleton-line preview"></span></div><div class="chat-conversation-skeleton" data-chat-skeleton aria-hidden="true"><span class="chat-skeleton-line name"></span><span class="chat-skeleton-line email"></span><span class="chat-skeleton-line detail"></span><span class="chat-skeleton-line preview"></span></div><div class="chat-conversation-skeleton" data-chat-skeleton aria-hidden="true"><span class="chat-skeleton-line name"></span><span class="chat-skeleton-line email"></span><span class="chat-skeleton-line detail"></span><span class="chat-skeleton-line preview"></span></div></div>
   </aside>` : '';
   const empty = isAdmin
     ? 'Choose a borrower to open their conversation.'
@@ -127,8 +127,8 @@ function chatPage(role, user) {
       <section class="chat-panel chat-thread" aria-label="Chat conversation">
         <header class="chat-thread-header"><div><h2 data-chat-title>${isAdmin ? 'Choose a borrower' : 'Equipment Desk'}</h2>
     <p data-chat-subtitle>${isAdmin ? 'Select a borrower to start or continue a conversation.' : 'Only you and the admin team can see this conversation.'}</p></div></header>
-        <div class="chat-messages" data-chat-messages role="log" aria-live="polite" aria-relevant="additions text">
-          <p class="chat-empty" data-chat-empty>${empty}</p>
+        <div class="chat-messages" data-chat-messages role="log" aria-live="polite" aria-relevant="additions text"${!isAdmin ? ' aria-busy="true"' : ''}>
+          ${isAdmin ? `<p class="chat-empty" data-chat-empty>${empty}</p>` : '<div class="chat-message-skeleton-group" data-chat-skeleton aria-hidden="true"><div class="chat-message-skeleton"><span class="chat-skeleton-line meta"></span><span class="chat-skeleton-line body long"></span><span class="chat-skeleton-line body medium"></span></div><div class="chat-message-skeleton is-own"><span class="chat-skeleton-line meta"></span><span class="chat-skeleton-line body medium"></span><span class="chat-skeleton-line body short"></span></div><div class="chat-message-skeleton"><span class="chat-skeleton-line meta"></span><span class="chat-skeleton-line body medium"></span><span class="chat-skeleton-line body short"></span></div></div>'}
         </div>
         <form class="chat-composer" data-chat-form>
           <label class="sr-only" for="chat-message">Message</label>

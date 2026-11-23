@@ -33,6 +33,8 @@
   let conversationSignature = '';
   let currentConversations = [];
   let currentItems = [];
+  let conversationsLoaded = false;
+  let messagesLoaded = false;
   let itemsLoaded = false;
   let refreshTimer = null;
   let refreshing = false;
@@ -64,6 +66,26 @@
     empty.dataset.chatEmpty = '';
     empty.textContent = message;
     messagePane.replaceChildren(empty);
+  }
+  const messageSkeletonMarkup = '<div class="chat-message-skeleton-group" data-chat-skeleton aria-hidden="true"><div class="chat-message-skeleton"><span class="chat-skeleton-line meta"></span><span class="chat-skeleton-line body long"></span><span class="chat-skeleton-line body medium"></span></div><div class="chat-message-skeleton is-own"><span class="chat-skeleton-line meta"></span><span class="chat-skeleton-line body medium"></span><span class="chat-skeleton-line body short"></span></div><div class="chat-message-skeleton"><span class="chat-skeleton-line meta"></span><span class="chat-skeleton-line body medium"></span><span class="chat-skeleton-line body short"></span></div></div>';
+  const conversationSkeletonMarkup = '<div class="chat-conversation-skeleton" data-chat-skeleton aria-hidden="true"><span class="chat-skeleton-line name"></span><span class="chat-skeleton-line email"></span><span class="chat-skeleton-line detail"></span><span class="chat-skeleton-line preview"></span></div>'.repeat(4);
+  function showMessageSkeletons() {
+    messagePane.innerHTML = messageSkeletonMarkup;
+    messagePane.setAttribute('aria-busy', 'true');
+  }
+  function showConversationSkeletons() {
+    if (!list) return;
+    list.innerHTML = conversationSkeletonMarkup;
+    list.setAttribute('aria-busy', 'true');
+  }
+  function showLoadError(container, message) {
+    if (!container) return;
+    const error = document.createElement('p');
+    error.className = 'chat-empty';
+    error.dataset.chatLoadError = '';
+    error.textContent = `${message} Retrying…`;
+    container.replaceChildren(error);
+    container.setAttribute('aria-busy', 'false');
   }
 
   function formattedTime(value) {
@@ -98,13 +120,22 @@
         const attachment = document.createElement('div');
         attachment.className = 'chat-item-attachment';
         if (equipment.image_url) {
+          const imageFrame = document.createElement('span');
+          imageFrame.className = 'chat-item-attachment-image-frame is-image-loading';
+          imageFrame.dataset.imageSkeleton = '';
           const image = document.createElement('img');
           image.className = 'chat-item-attachment-image';
           image.src = equipment.image_url;
           image.alt = equipment.name;
           image.loading = 'lazy';
-          image.addEventListener('error', () => image.remove(), { once: true });
-          attachment.append(image);
+          image.dataset.skeletonImage = '';
+          image.addEventListener('error', () => {
+            imageFrame.classList.remove('is-image-loading');
+            image.remove();
+          }, { once: true });
+          imageFrame.append(image);
+          attachment.append(imageFrame);
+          window.CSPCSkeletons?.watchImage(image);
         }
         const details = document.createElement('div');
         details.className = 'chat-item-attachment-details';
@@ -134,11 +165,17 @@
       const preview = document.createElement('div');
       preview.className = 'chat-item-preview-entry';
       if (selectedItem.image_url) {
+        const imageFrame = document.createElement('span');
+        imageFrame.className = 'chat-item-preview-image-frame is-image-loading';
+        imageFrame.dataset.imageSkeleton = '';
         const image = document.createElement('img');
         image.src = selectedItem.image_url;
         image.alt = selectedItem.name;
         image.loading = 'lazy';
-        preview.append(image);
+        image.dataset.skeletonImage = '';
+        imageFrame.append(image);
+        preview.append(imageFrame);
+        window.CSPCSkeletons?.watchImage(image);
       }
       const name = document.createElement('span');
       name.textContent = `${selectedItem.name} · ${selectedItem.department}`;
@@ -203,6 +240,8 @@
 
   function renderMessages(messages, reset = false) {
     const rows = Array.isArray(messages) ? messages : [];
+    messagePane.setAttribute('aria-busy', 'false');
+    messagePane.querySelector('[data-chat-load-error]')?.remove();
     if (reset) {
       messagePane.replaceChildren();
       lastMessageId = 0;
@@ -215,6 +254,12 @@
     }
 
     messagePane.querySelector('[data-chat-empty]')?.remove();
+    if (!rows.length && !lastMessageId) {
+      showEmpty(role === 'borrower'
+        ? 'No messages yet. Send a message to start the conversation.'
+        : 'No messages yet. Send a message to start this conversation.');
+      return;
+    }
     const wasNearBottom = messagePane.scrollHeight - messagePane.scrollTop - messagePane.clientHeight < 100;
     const fresh = rows.filter(message => Number(message.id) > lastMessageId);
     for (const message of fresh) {
@@ -258,6 +303,8 @@
 
   function renderConversations(rows) {
     if (!list) return;
+    conversationsLoaded = true;
+    list.setAttribute('aria-busy', 'false');
     currentConversations = rows;
     updateAdminChatUnread();
     const visibleRows = departmentFilters.size
@@ -312,13 +359,16 @@
   }
 
   async function loadBorrowerMessages(reset = false) {
+    if (!messagesLoaded) showMessageSkeletons();
     const data = await requestJson('/api/chat/messages');
-    renderMessages(data.messages, reset);
+    renderMessages(data.messages, reset || !messagesLoaded);
+    messagesLoaded = true;
     setSidebarChatUnread(0);
   }
 
   async function loadAdminMessages(reset = false) {
     if (activeBorrowerId === null) return;
+    if (!messagesLoaded && !messagePane.querySelector('[data-chat-skeleton]')) showMessageSkeletons();
     const data = await requestJson(`/api/admin/chat/conversations/${activeBorrowerId}/messages`);
     const conversation = currentConversations.find(item => Number(item.borrower_id) === activeBorrowerId);
     if (conversation) {
@@ -328,7 +378,8 @@
     }
     title.textContent = data.borrower.name;
     subtitle.textContent = `${data.borrower.department || 'College of Computer Studies'} · ${data.borrower.email} · private conversation`;
-    renderMessages(data.messages, reset);
+    renderMessages(data.messages, reset || !messagesLoaded);
+    messagesLoaded = true;
   }
 
   async function selectConversation(id) {
@@ -347,18 +398,21 @@
       subtitle.textContent = selected
         ? `${selected.department || 'College of Computer Studies'} · ${selected.email}`
         : 'Private conversation';
-      showEmpty('Loading conversation…');
+      messagesLoaded = false;
+      showMessageSkeletons();
       lastMessageId = 0;
     }
     try {
       await Promise.all([loadAdminMessages(changed), loadItems()]);
       setStatus('Up to date');
     } catch (error) {
+      if (!messagesLoaded) showLoadError(messagePane, error.message || 'Unable to load this conversation.');
       setStatus(error.message, true);
     }
   }
 
   async function loadAdminInbox() {
+    if (!conversationsLoaded) showConversationSkeletons();
     const data = await requestJson('/api/admin/chat/conversations');
     renderConversations(data.conversations || []);
     const available = currentConversations.some(item => Number(item.borrower_id) === activeBorrowerId);
@@ -391,6 +445,8 @@
         setStatus('Up to date');
       }
     } catch (error) {
+      if (role === 'admin' && !conversationsLoaded) showLoadError(list, error.message || 'Unable to load conversations.');
+      if (role === 'borrower' && !messagesLoaded) showLoadError(messagePane, error.message || 'Unable to load messages.');
       setStatus(error.message || 'Unable to load messages.', true);
     } finally {
       refreshing = false;

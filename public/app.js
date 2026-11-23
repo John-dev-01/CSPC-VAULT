@@ -1,5 +1,20 @@
 (() => {
   const root = document.documentElement;
+  const networkConnection = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+  const isSlowNetwork = () => {
+    const type = networkConnection?.effectiveType || '';
+    const downlink = Number(networkConnection?.downlink);
+    const rtt = Number(networkConnection?.rtt);
+    const slow = Boolean(networkConnection && !networkConnection.saveData && (
+      ['slow-2g', '2g'].includes(type) ||
+      (Number.isFinite(downlink) && downlink > 0 && downlink <= 2) ||
+      (Number.isFinite(rtt) && rtt >= 400)
+    ));
+    if (slow) root.dataset.skeletonEnabled = 'true';
+    else delete root.dataset.skeletonEnabled;
+    return slow;
+  };
+  isSlowNetwork();
   document.addEventListener('error', event => {
     const image = event.target;
     if (image instanceof HTMLImageElement && !image.dataset.placeholderFallback && image.src !== `${window.location.origin}/images/equipment-placeholder.png`) {
@@ -7,6 +22,204 @@
       image.src = '/images/equipment-placeholder.png';
     }
   }, true);
+  const settleImageSkeleton = image => {
+    const container = image.closest('[data-image-skeleton]');
+    container?.classList.remove('is-image-loading');
+  };
+  const watchImageSkeleton = image => {
+    if (!(image instanceof HTMLImageElement) || image.dataset.skeletonObserved) return;
+    const container = image.closest('[data-image-skeleton]');
+    if (!container) return;
+    image.dataset.skeletonObserved = 'true';
+    if (image.complete && image.naturalWidth > 0) {
+      container.classList.remove('is-image-loading');
+      return;
+    }
+    if (!isSlowNetwork()) {
+      container.classList.remove('is-image-loading');
+      return;
+    }
+    container.classList.add('is-image-loading');
+    image.addEventListener('load', () => settleImageSkeleton(image));
+    image.addEventListener('error', () => {
+      if (image.dataset.placeholderFallback) return;
+      settleImageSkeleton(image);
+    });
+  };
+  window.CSPCSkeletons = { ...(window.CSPCSkeletons || {}), watchImage: watchImageSkeleton, isSlowNetwork };
+  document.querySelectorAll('img[data-skeleton-image]').forEach(watchImageSkeleton);
+  let pageSkeletonLayer = null;
+  let pageSkeletonSource = null;
+  let pageSkeletonSourceWasInert = false;
+  networkConnection?.addEventListener?.('change', () => {
+    if (isSlowNetwork()) return;
+    document.querySelectorAll('.is-image-loading').forEach(container => container.classList.remove('is-image-loading'));
+    document.querySelectorAll('[data-chat-skeleton]').forEach(skeleton => skeleton.remove());
+    document.querySelectorAll('.field-note.is-availability-loading').forEach(message => message.classList.remove('is-availability-loading'));
+    pageSkeletonLayer?.remove();
+    pageSkeletonLayer = null;
+    if (pageSkeletonSource) pageSkeletonSource.inert = pageSkeletonSourceWasInert;
+    pageSkeletonSource = null;
+    delete root.dataset.pageSkeletonLoading;
+  });
+  function showFullPageSkeleton(destinationHref = window.location.href) {
+    if (!isSlowNetwork() || pageSkeletonLayer || root.dataset.pageSkeletonLoading === 'true') return;
+    const source = document.querySelector('.app, .forced-password-layout, .auth-shell');
+    if (!source) return;
+    const copy = source.cloneNode(true);
+    const destinationPath = new URL(destinationHref, window.location.href).pathname;
+    copy.querySelectorAll('.sidebar nav a[href]').forEach(link => {
+      const isDestination = new URL(link.href, window.location.href).pathname === destinationPath;
+      link.classList.toggle('active', isDestination);
+      if (isDestination) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    copy.classList.add('page-loading-skeleton-copy');
+    copy.setAttribute('aria-hidden', 'true');
+    copy.inert = true;
+    copy.querySelectorAll('[id]').forEach(element => element.removeAttribute('id'));
+    copy.querySelectorAll('script, style, iframe').forEach(element => element.remove());
+    copy.querySelectorAll('button, input, textarea, select, summary, [role="button"]').forEach(element => {
+      if (!element.matches('.account-trigger')) element.classList.add('page-loading-skeleton-control');
+    });
+    copy.querySelectorAll('.google-sign-in').forEach(element => element.classList.add('page-loading-skeleton-control'));
+    copy.querySelectorAll('input, textarea').forEach(element => {
+      element.value = '';
+      element.setAttribute('placeholder', '');
+    });
+    copy.querySelectorAll('.account-trigger').forEach(element => element.classList.add('page-loading-skeleton-account-trigger'));
+    copy.querySelectorAll('.avatar').forEach(element => element.classList.add('page-loading-skeleton-avatar'));
+    copy.querySelectorAll('.stat').forEach(element => element.classList.add('page-loading-skeleton-stat'));
+    copy.querySelectorAll('.equipment-card').forEach(element => {
+      element.classList.add('page-loading-skeleton-equipment-card');
+      element.querySelector('.equipment-card-image')?.classList.add('page-loading-skeleton-equipment-image');
+      element.querySelector('.equipment-card-body')?.classList.add('page-loading-skeleton-equipment-body');
+    });
+    copy.querySelectorAll('.sidebar-nav-active-indicator, .theme-switcher-indicator').forEach(element => element.remove());
+    const sourceImages = [...source.querySelectorAll('img')];
+    [...copy.querySelectorAll('img')].forEach((image, index) => {
+      const original = sourceImages[index];
+      const style = original ? getComputedStyle(original) : null;
+      const rect = original?.getBoundingClientRect();
+      const placeholder = document.createElement('span');
+      placeholder.className = `${image.className || ''} page-loading-skeleton-image`.trim();
+      placeholder.setAttribute('aria-hidden', 'true');
+      placeholder.style.display = style?.display === 'inline' ? 'inline-block' : (style?.display || 'block');
+      if (rect?.width) placeholder.style.width = `${rect.width}px`;
+      if (rect?.height) placeholder.style.height = `${rect.height}px`;
+      if (style) {
+        ['position', 'top', 'right', 'bottom', 'left', 'margin', 'flex', 'alignSelf', 'borderRadius'].forEach(property => {
+          if (style[property]) placeholder.style[property] = style[property];
+        });
+      }
+      image.replaceWith(placeholder);
+    });
+    copy.querySelectorAll('svg').forEach(icon => icon.classList.add('page-loading-skeleton-icon'));
+    copy.querySelectorAll('.brand-logo svg').forEach(icon => icon.classList.add('page-loading-skeleton-logo'));
+    copy.querySelectorAll('.stat-icon svg').forEach(icon => icon.classList.add('page-loading-skeleton-stat-icon'));
+    copy.querySelectorAll('.sidebar nav svg, .sidebar-toggle svg, .theme-switcher svg, .theme-switcher-trigger svg')
+      .forEach(icon => icon.classList.add('page-loading-skeleton-small-icon'));
+    copy.querySelectorAll('canvas').forEach(chart => chart.classList.add('page-loading-skeleton-chart'));
+    const layer = document.createElement('div');
+    layer.className = 'page-loading-skeleton-layer';
+    layer.setAttribute('role', 'status');
+    layer.setAttribute('aria-live', 'polite');
+    layer.setAttribute('aria-label', 'Loading the next page');
+    layer.append(copy);
+    document.body.append(layer);
+    pageSkeletonLayer = layer;
+    pageSkeletonSource = source;
+    pageSkeletonSourceWasInert = source.inert;
+    source.inert = true;
+    root.dataset.pageSkeletonLoading = 'true';
+
+    const walker = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node.nodeValue.trim() && !node.parentElement.closest('script, style, textarea, title')) textNodes.push(node);
+    }
+    const skeletonTextMetrics = textNodes.map(node => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const lines = [...range.getClientRects()]
+        .filter(rect => rect.width > 1 && rect.height > 1)
+        .map(rect => ({ width: rect.width, height: rect.height }));
+      return { node, lines };
+    });
+    skeletonTextMetrics.forEach(({ node, lines }) => {
+      if (!lines.length) return;
+      if (lines.length === 1) {
+        const line = document.createElement('span');
+        line.className = 'page-loading-skeleton-text';
+        line.style.width = `${lines[0].width}px`;
+        line.style.height = `${lines[0].height}px`;
+        node.replaceWith(line);
+        return;
+      }
+      const group = document.createElement('span');
+      group.className = 'page-loading-skeleton-text-group';
+      lines.forEach(({ width, height }) => {
+        const line = document.createElement('span');
+        line.className = 'page-loading-skeleton-text';
+        line.style.width = `${width}px`;
+        line.style.height = `${height}px`;
+        group.append(line);
+      });
+      node.replaceWith(group);
+    });
+  }
+  window.addEventListener('pageshow', () => {
+    pageSkeletonLayer?.remove();
+    pageSkeletonLayer = null;
+    if (pageSkeletonSource) pageSkeletonSource.inert = pageSkeletonSourceWasInert;
+    pageSkeletonSource = null;
+    delete root.dataset.pageSkeletonLoading;
+  });
+  const afterSkeletonPaint = callback => requestAnimationFrame(() => requestAnimationFrame(callback));
+  document.addEventListener('click', event => {
+    if (!isSlowNetwork()) return;
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest('a[href]');
+    if (!anchor || anchor.hasAttribute('download') || (anchor.target && anchor.target !== '_self') ||
+        anchor.closest('[data-auth-switch], [data-no-page-skeleton]')) return;
+    try {
+      const destination = new URL(anchor.href, window.location.href);
+      if (destination.origin !== window.location.origin ||
+          destination.href === window.location.href ||
+          (destination.pathname === window.location.pathname && destination.search === window.location.search && destination.hash)) return;
+      event.preventDefault();
+      showFullPageSkeleton(destination.href);
+      afterSkeletonPaint(() => window.location.assign(destination.href));
+    } catch { /* Ignore malformed or non-navigation links. */ }
+  });
+  document.addEventListener('submit', event => {
+    if (!isSlowNetwork()) return;
+    if (event.defaultPrevented || !(event.target instanceof HTMLFormElement) ||
+        event.target.matches('[data-chat-form], [data-no-page-skeleton]')) return;
+    const form = event.target;
+    if (form.dataset.pageSkeletonResubmitting === 'true') {
+      delete form.dataset.pageSkeletonResubmitting;
+      return;
+    }
+    if (form.target && form.target !== '_self') return;
+    const destination = new URL(form.action || window.location.href, window.location.href);
+    if (destination.origin !== window.location.origin) return;
+    const submitter = event.submitter;
+    event.preventDefault();
+    form.dataset.pageSkeletonResubmitting = 'true';
+    showFullPageSkeleton();
+    afterSkeletonPaint(() => {
+      if (!form.isConnected) return;
+      if (typeof form.requestSubmit === 'function') {
+        if (submitter && submitter.form === form) form.requestSubmit(submitter);
+        else form.requestSubmit();
+      } else {
+        delete form.dataset.pageSkeletonResubmitting;
+        HTMLFormElement.prototype.submit.call(form);
+      }
+    });
+  });
   document.addEventListener('keydown', event => {
     if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
@@ -26,6 +239,7 @@
     const form = event.target.closest('form[action="/logout"]');
     if (!form || form.dataset.csrfRefreshing === 'true') return;
     event.preventDefault();
+    showFullPageSkeleton();
     form.dataset.csrfRefreshing = 'true';
     fetch('/csrf-token', { credentials: 'same-origin', headers: { Accept: 'application/json' }, cache: 'no-store' })
       .then(response => response.ok ? response.json() : Promise.reject(new Error('CSRF refresh failed')))
@@ -61,14 +275,18 @@
   </div>`;
   const authWelcomeLogo = `<span class="auth-welcome-logo" aria-hidden="true"><svg class="auth-logo-svg" viewBox="0 0 48 48"><path class="orbit" d="M24 4a20 20 0 1 1-14.14 5.86"/><path class="orbit orbit-secondary" d="M24 10a14 14 0 1 1-9.9 4.1"/><path class="core" d="m24 13 11 6.35v12.3L24 38l-11-6.35v-12.3z"/><path class="core-lines" d="M24 13v12.5m11-6.15-11 6.15-11-6.15"/></svg></span>`;
 
-  const fixedCursor = document.createElement('span');
-  fixedCursor.id = 'custom-cursor';
+  const fixedCursor = document.getElementById('custom-cursor') || document.createElement('span');
+  if (!fixedCursor.id) fixedCursor.id = 'custom-cursor';
   fixedCursor.setAttribute('aria-hidden', 'true');
-  document.body.appendChild(fixedCursor);
+  if (!fixedCursor.isConnected) document.body.appendChild(fixedCursor);
   root.dataset.customCursor = 'active';
 
   // Flip the cursor color depending on the surface under it.
-  let lastX = -1, lastY = -1, checkQueued = false;
+  const restoredCursorX = Number.parseFloat(root.style.getPropertyValue('--custom-cursor-x'));
+  const restoredCursorY = Number.parseFloat(root.style.getPropertyValue('--custom-cursor-y'));
+  let lastX = Number.isFinite(restoredCursorX) ? restoredCursorX : -1;
+  let lastY = Number.isFinite(restoredCursorY) ? restoredCursorY : -1;
+  let checkQueued = false;
   const surfaceIsLight = (x, y) => {
     let el = document.elementFromPoint(x, y);
     while (el) {
@@ -101,6 +319,7 @@
     checkQueued = true;
     requestAnimationFrame(updateCursorContrast);
   };
+  if (lastX >= 0 && lastY >= 0) queueContrastCheck();
 
   const departmentMenuCloseTimers = new WeakMap();
   const closeDepartmentMenu = (wrapper, restoreFocus = false) => {
@@ -218,10 +437,9 @@
   });
 
   document.addEventListener('submit', event => {
-    const wrapper = event.target.querySelector('[data-department-select][data-required-selection]');
+    const wrapper = [...event.target.querySelectorAll('[data-department-select][data-required-selection]')]
+      .find(item => !item.querySelector('[data-department-value]')?.value);
     if (!wrapper) return;
-    const value = wrapper.querySelector('[data-department-value]');
-    if (value?.value) return;
     event.preventDefault();
     wrapper.classList.add('is-invalid');
     wrapper.querySelector('[data-department-error]')?.removeAttribute('hidden');
@@ -234,15 +452,36 @@
     lastY = event.clientY;
     fixedCursor.style.left = `${lastX}px`;
     fixedCursor.style.top = `${lastY}px`;
+    root.style.setProperty('--custom-cursor-x', `${lastX}px`);
+    root.style.setProperty('--custom-cursor-y', `${lastY}px`);
     fixedCursor.classList.add('is-visible');
     queueContrastCheck();
+  };
+  const persistFixedCursorPosition = () => {
+    if (lastX < 0 || lastY < 0) return;
+    try { sessionStorage.setItem('cspc-custom-cursor-position', JSON.stringify({ x: lastX, y: lastY })); } catch (e) {}
   };
   document.addEventListener('transitionend', queueContrastCheck, true);
   document.addEventListener('animationend', queueContrastCheck, true);
   window.addEventListener('scroll', queueContrastCheck, { passive: true, capture: true });
   document.addEventListener('pointermove', moveFixedCursor, { passive: true });
-  document.addEventListener('pointerleave', () => fixedCursor.classList.remove('is-visible'));
-  window.addEventListener('blur', () => fixedCursor.classList.remove('is-visible'));
+  const retainCursorForSidebarNavigation = event => {
+    if (!event.target.closest('.app.sidebar-portal .sidebar nav a') || event.pointerType === 'touch') return;
+    if (event.type === 'click' && event.detail === 0) return;
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    fixedCursor.style.left = `${lastX}px`;
+    fixedCursor.style.top = `${lastY}px`;
+    root.style.setProperty('--custom-cursor-x', `${lastX}px`);
+    root.style.setProperty('--custom-cursor-y', `${lastY}px`);
+    fixedCursor.classList.add('is-visible');
+    persistFixedCursorPosition();
+    queueContrastCheck();
+  };
+  ['pointerdown', 'pointerup', 'click'].forEach(type => document.addEventListener(type, retainCursorForSidebarNavigation, true));
+  document.addEventListener('pointerdown', persistFixedCursorPosition, true);
+  window.addEventListener('pagehide', persistFixedCursorPosition);
 
   const placeThemeIndicators = (instant = false) => {
     document.querySelectorAll('.theme-switcher').forEach(switcher => {
@@ -454,6 +693,7 @@
     const activeIndex = Math.max(0, links.findIndex(item => item.classList.contains('active')));
     const direction = targetIndex >= activeIndex ? 'up' : 'down';
     event.preventDefault();
+    showFullPageSkeleton(destination.href);
     sidebarNavigationPending = true;
     links.forEach(item => {
       const selected = item === link;
@@ -1122,17 +1362,28 @@
     const message = form.querySelector('[data-availability-message]');
     const submit = form.querySelector('button[type="submit"], button:not([type])');
     let timer;
+    let availabilityRequest = 0;
     const updateAvailability = async () => {
+      const requestId = ++availabilityRequest;
       if (!borrowDate?.value || !dueDate?.value || dueDate.value < borrowDate.value) {
-        if (message) message.textContent = 'Choose a valid date range.';
+        if (message) {
+          message.classList.remove('is-availability-loading');
+          message.setAttribute('aria-busy', 'false');
+          message.textContent = 'Choose a valid date range.';
+        }
         if (submit) submit.disabled = true;
         return;
       }
-      if (message) message.textContent = 'Checking availability…';
+      if (message) {
+        message.classList.add('is-availability-loading');
+        message.setAttribute('aria-busy', 'true');
+        message.textContent = 'Checking availability…';
+      }
       try {
         const params = new URLSearchParams({ borrow_date: borrowDate.value, due_date: dueDate.value });
         const response = await fetch(`${form.dataset.availabilityUrl}?${params}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
         const result = await response.json();
+        if (requestId !== availabilityRequest) return;
         if (!response.ok) throw new Error(result.error || 'Availability could not be checked.');
         const available = Number(result.available) || 0;
         if (message) message.textContent = result.unavailableReason || `${available} ${available === 1 ? 'copy is' : 'copies are'} available for these dates.`;
@@ -1142,8 +1393,15 @@
         }
         if (submit) submit.disabled = available < 1;
       } catch (error) {
-        if (message) message.textContent = error.message;
-        if (submit) submit.disabled = true;
+        if (requestId === availabilityRequest) {
+          if (message) message.textContent = error.message;
+          if (submit) submit.disabled = true;
+        }
+      } finally {
+        if (requestId === availabilityRequest && message) {
+          message.classList.remove('is-availability-loading');
+          message.setAttribute('aria-busy', 'false');
+        }
       }
     };
     [borrowDate, dueDate].forEach(input => input?.addEventListener('change', () => {
